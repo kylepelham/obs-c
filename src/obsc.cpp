@@ -9,9 +9,23 @@
 
 namespace obsc {
 
-Capture::Capture(const std::string& windowName)
+Capture::Capture(const std::string& windowName, bool captureOverlays)
 {
     config.windowName = windowName;
+    config.captureOverlays = captureOverlays;
+}
+
+void Capture::setCaptureOverlays(bool enabled)
+{
+    config.captureOverlays = enabled;
+
+    // Push to live hook info if attached + re-signal init to re-read it.
+    // Pre-attach (pid 0) the open throws; value applies at next attach().
+    try {
+        auto hookInfo = FileMapping<HookInfo>::open(fmt::format("{}{}", SHMEM_HOOK_INFO, context.pid));
+        hookInfo->capture_overlay = config.captureOverlays;
+        if (context.hookInit) context.hookInit->signal();
+    } catch (...) {}
 }
 
 void Capture::attach()

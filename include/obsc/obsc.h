@@ -24,8 +24,8 @@ namespace obsc {
 
 struct OBSC_EXPORT CaptureConfig {
     std::string windowName;
-    bool captureOverlays;
-    uint32_t frames;
+    bool captureOverlays = false;  // include 3rd-party overlays (Discord/Steam) in the capture?
+    uint32_t frames = 0;
 };
 
 struct OBSC_EXPORT StripFrame {
@@ -40,10 +40,15 @@ private:
     Context context;
 
 public:
-    Capture(const std::string& windowName);
+    Capture(const std::string& windowName, bool captureOverlays = false);
 
     void attach();
     void shutdown();
+
+    // Toggle overlay capture. Set pre-attach for the initial mode; if attached,
+    // pushes to the live hook info and re-signals the hook to re-read it.
+    void setCaptureOverlays(bool enabled);
+    bool captureOverlays() const { return config.captureOverlays; }
     std::tuple<std::vector<uint8_t>, std::pair<size_t, size_t>> captureFrame();
 
     // Sub-rect capture; cheaper memcpy than captureFrame when only a region is needed.
