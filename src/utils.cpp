@@ -6,6 +6,20 @@
 
 namespace obsc {
 
+std::string OBSC_EXPORT moduleDir()
+{
+    wchar_t buf[MAX_PATH] = {0};
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0) return ".";
+    std::filesystem::path p(buf);
+    return p.has_parent_path() ? p.parent_path().string() : std::string(".");
+}
+
+std::string OBSC_EXPORT resolveBesideExe(const std::string& name)
+{
+    return (std::filesystem::path(moduleDir()) / name).string();
+}
+
 std::string OBSC_EXPORT runProcessAndCaptureOutput(const std::string& command)
 {
     // Create a pipe for the child process's STDOUT.
@@ -76,10 +90,11 @@ std::string OBSC_EXPORT runProcessAndCaptureOutput(const std::string& command)
 // instead of repeating code, refactor the function to use the runProcessAndCaptureOutput function
 void injectGraphicsHook(uint32_t pid, bool antiCheatCompatible, bool is32Bit)
 {
-    // Get the file names based on the bitness
-    std::string injectorFileName = is32Bit ? FILE_INJECTOR_32_NAME : FILE_INJECTOR_64_NAME;
-    std::string hookFileName = is32Bit ? FILE_HOOK_32_NAME : FILE_HOOK_64_NAME;
-    
+    // Resolve the helper binaries next to the EXE (not the cwd), so launching
+    // the bot from any working directory still finds them.
+    std::string injectorFileName = resolveBesideExe(is32Bit ? FILE_INJECTOR_32_NAME : FILE_INJECTOR_64_NAME);
+    std::string hookFileName     = resolveBesideExe(is32Bit ? FILE_HOOK_32_NAME : FILE_HOOK_64_NAME);
+
     // Check if the injector exists
     if (!std::filesystem::exists(injectorFileName))
         throw std::runtime_error(fmt::format("The injector exe does not exist: {}", injectorFileName));
@@ -88,9 +103,11 @@ void injectGraphicsHook(uint32_t pid, bool antiCheatCompatible, bool is32Bit)
     if (!std::filesystem::exists(hookFileName))
         throw std::runtime_error(fmt::format("The hook dll does not exist: {}", hookFileName));
 
-    // Run injector
+    // Run injector. Quote both paths -- the exe can live under a path with
+    // spaces (e.g. ...\World of Warcraft\...), which CreateProcess would
+    // otherwise split on.
     std::string command = fmt::format(
-        "{} {} {} {}",
+        "\"{}\" \"{}\" {} {}",
         injectorFileName,
         hookFileName,
         std::to_string((uint8_t)antiCheatCompatible),

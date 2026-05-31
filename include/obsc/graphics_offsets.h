@@ -91,14 +91,15 @@ struct GraphicsOffsets {
 // Function to load graphic offsets
 inline GraphicsOffsets loadGraphicsOffsets(uint32_t pid, bool is32Bit)
 {
-    // Switch binaries based on the bitness
-    std::string graphicsOffsetName = is32Bit ? FILE_GRAPHICS_OFFSETS_32_NAME : FILE_GRAPHICS_OFFSETS_64_NAME;
+    // Switch binaries based on the bitness. Resolve next to the EXE (not the
+    // cwd) so the bot can be launched from any working directory.
+    std::string graphicsOffsetName = resolveBesideExe(is32Bit ? FILE_GRAPHICS_OFFSETS_32_NAME : FILE_GRAPHICS_OFFSETS_64_NAME);
 
     if (!std::filesystem::exists(graphicsOffsetName))
         throw std::runtime_error(fmt::format("The graphics offsets exe does not exist: {}", graphicsOffsetName));
 
-    // Execute the binary
-    std::string output = runProcessAndCaptureOutput(graphicsOffsetName);
+    // Execute the binary. Quote the path -- it may contain spaces.
+    std::string output = runProcessAndCaptureOutput("\"" + graphicsOffsetName + "\"");
 
     // Parse the output using a TOML parsing library
     auto parsedToml = toml::parse_str(output);

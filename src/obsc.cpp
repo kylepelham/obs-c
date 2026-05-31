@@ -122,6 +122,55 @@ std::tuple<std::vector<uint8_t>, std::pair<size_t, size_t>> Capture::captureFram
     return {std::move(frameData), dimensions};
 }
 
+bool Capture::captureStripInto(uint8_t* out, int x, int y, int w, int h)
+{
+    if (!out || w <= 0 || h <= 0 || x < 0 || y < 0) return false;
+
+    if (context.hookRestart && context.hookRestart->signalled()) {
+        PRINTLN("The restart event has been signalled. Restarting the capture.");
+        attach();
+    }
+
+    DXGI_MAPPED_RECT mapped{};
+    std::pair<size_t, size_t> dim{};
+    try {
+        auto r = mapResource();
+        mapped = std::get<0>(r);
+        dim    = std::get<1>(r);
+    } catch (const std::exception& e) {
+        PRINTLN("captureStripInto: {}", e.what());
+        return false;
+    }
+
+    if (static_cast<size_t>(x + w) > dim.first ||
+        static_cast<size_t>(y + h) > dim.second) return false;
+
+    const auto* src      = static_cast<const uint8_t*>(mapped.pBits);
+    const size_t pitch   = static_cast<size_t>(mapped.Pitch);
+    const size_t rowSize = static_cast<size_t>(w) * 4;
+
+    for (int row = 0; row < h; ++row)
+        std::memcpy(out + row * rowSize, src + (y + row) * pitch + x * 4, rowSize);
+
+    return true;
+}
+
+StripFrame Capture::captureStrip(int x, int y, int w, int h)
+{
+    StripFrame out{ {}, w, h };
+    out.bgra.resize(static_cast<size_t>(w) * h * 4);
+    if (!captureStripInto(out.bgra.data(), x, y, w, h))
+        throw std::runtime_error("captureStrip failed");
+    return out;
+}
+
+std::vector<uint8_t> Capture::getPixel(int x, int y)
+{
+    std::vector<uint8_t> out(4);
+    if (!captureStripInto(out.data(), x, y, 1, 1)) return {};
+    return out;
+}
+
 void Capture::initKeepalive()
 {
     if (context.keepaliveMutex)
