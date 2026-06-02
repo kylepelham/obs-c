@@ -104,7 +104,7 @@ inline GraphicsOffsets loadGraphicsOffsets(uint32_t pid, bool is32Bit)
     // Parse the output using a TOML parsing library
     auto parsedToml = toml::parse_str(output);
     
-    GraphicsOffsets offsets;
+    GraphicsOffsets offsets{};
 
     offsets.d3d8.present = toml::find<uint32_t>(parsedToml, "d3d8", "present");
     offsets.d3d9.present = toml::find<uint32_t>(parsedToml, "d3d9", "present");
@@ -116,8 +116,7 @@ inline GraphicsOffsets loadGraphicsOffsets(uint32_t pid, bool is32Bit)
     offsets.dxgi.present = toml::find<uint32_t>(parsedToml, "dxgi", "present");
     offsets.dxgi.present1 = toml::find<uint32_t>(parsedToml, "dxgi", "present1");
     offsets.dxgi.resize = toml::find<uint32_t>(parsedToml, "dxgi", "resize");
-
-    offsets.ddraw = DDraw{};  // Default initialization for DDraw
+    offsets.dxgi2.release = toml::find<uint32_t>(parsedToml, "dxgi", "release");
 
     return offsets;
 }
