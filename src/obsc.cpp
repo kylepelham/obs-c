@@ -314,17 +314,60 @@ std::tuple<DXGI_MAPPED_RECT, std::pair<size_t, size_t>> Capture::mapResource()
     return {mapped_surface, {textureDesc.Width, textureDesc.Height}};
 }
 
+bool Capture::waitHookReady()
+{
+    // Hook re-inits + fires HookReady only when its present hook sees:
+    // !active + Restart signalled + keepalive alive (capture_should_init).
+    constexpr DWORD kPollMs = 25;
+
+    auto poll = [&](DWORD durationMs) -> bool {
+        for (DWORD t = 0; t < durationMs; t += kPollMs) {
+            if (context.hookReady->signalled()) return true;
+            Sleep(kPollMs);
+        }
+        return context.hookReady->signalled();
+    };
+
+    auto succeed = [&]() -> bool {
+        // drop leftover Restart so captureStrip doesn't spuriously re-attach
+        if (context.hookRestart) context.hookRestart->reset();
+        return true;
+    };
+
+    context.hookInit->signal();  // releases a fresh hook's capture_loop
+
+    // Fast path: an inactive (cleanly stopped) hook re-inits on Restart alone
+    if (context.hookRestart) context.hookRestart->signal();
+    if (poll(800)) return succeed();
+
+    // Recovery: hook stuck active (prev run never signalled Stop; our keepalive
+    // masks its death). Force inactive via Stop, clear it, then Restart.
+    for (int phase = 0; phase < 6; ++phase) {
+        PRINTLN("HookReady stalled; forcing hook re-init (phase {}).", phase + 1);
+        if (context.hookStop) context.hookStop->signal();
+        Sleep(150);  // let a present process the stop
+        if (context.hookStop) context.hookStop->reset();
+        if (context.hookRestart) context.hookRestart->signal();
+        context.hookInit->signal();
+        if (poll(1200)) return succeed();
+    }
+
+    PRINTLN("HookReady not signalled; hook unresponsive.");
+    return false;
+}
+
 bool Capture::attemptExistingHook()
 {
+    // Restart event exists => a hook is already resident; ping it to re-init
     try {
         char name[64];
         sprintf_s(name, "%s%lu", EVENT_CAPTURE_RESTART, context.pid);
 
         auto event = Event::open(name);
-        if (!event.signal()) PRINTLN("Failed to signal the event: {}", GetLastError());
+        if (!event.signal()) PRINTLN("Failed to signal the restart event: {}", GetLastError());
         return true;
     }
-    catch(const std::exception&) {
+    catch (const std::exception&) {
         PRINTLN("Found no existing hook.");
         return false;
     }
