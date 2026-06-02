@@ -78,6 +78,7 @@ std::string OBSC_EXPORT runProcessAndCaptureOutput(const std::string& command)
 
     // Wait until child process exits.
     WaitForSingleObject(pi.hProcess, INFINITE);
+    if (exitCode) { *exitCode = 0; GetExitCodeProcess(pi.hProcess, exitCode); }
 
     // Close handles.
     CloseHandle(pi.hProcess);

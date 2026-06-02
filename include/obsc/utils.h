@@ -30,7 +30,7 @@ std::string OBSC_EXPORT moduleDir();
 // moduleDir() joined with `name`. Use for any sibling helper/asset.
 std::string OBSC_EXPORT resolveBesideExe(const std::string& name);
 
-std::string OBSC_EXPORT runProcessAndCaptureOutput(const std::string& cmd);
+std::string OBSC_EXPORT runProcessAndCaptureOutput(const std::string& cmd, DWORD* exitCode = nullptr);
 void OBSC_EXPORT injectGraphicsHook(uint32_t pid, bool antiCheatCompatible, bool is32Bit);
 std::pair<ComPtr<ID3D11Device>, ComPtr<ID3D11DeviceContext>> OBSC_EXPORT createDevice();
 ComPtr<ID3D11Resource> OBSC_EXPORT openResource(ComPtr<ID3D11Device> device, uint32_t handle);
