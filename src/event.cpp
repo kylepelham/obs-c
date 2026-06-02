@@ -51,6 +51,11 @@ bool Event::signal() const
     return SetEvent(handle) != 0;
 }
 
+bool Event::reset() const
+{
+    return ResetEvent(handle) != 0;
+}
+
 bool Event::signalled() const
 {
     return WaitForSingleObject(handle, 0) == WAIT_OBJECT_0;
@@ -59,6 +64,11 @@ bool Event::signalled() const
 void Event::wait() const
 {
     WaitForSingleObject(handle, INFINITE);
+}
+
+bool Event::wait(DWORD timeoutMs) const
+{
+    return WaitForSingleObject(handle, timeoutMs) == WAIT_OBJECT_0;
 }
 
 }  // namespace obsc

@@ -31,8 +31,10 @@ public:
     void openInline(const std::string& name);
 
     bool signal() const;
+    bool reset() const;
     bool signalled() const;
     void wait() const;
+    bool wait(DWORD timeoutMs) const;
 
     HANDLE getHandle() const { return handle; }
 };
