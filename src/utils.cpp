@@ -115,8 +115,11 @@ void injectGraphicsHook(uint32_t pid, bool antiCheatCompatible, bool is32Bit)
         std::to_string(pid)
     );
 
-    std::string output = runProcessAndCaptureOutput(command);
-    if (!output.empty()) throw std::runtime_error(fmt::format("Injector exited with code {}", output));
+    // inject-helper reports status via exit code (0 = ok, negative = error), not stdout
+    DWORD exitCode = 0;
+    runProcessAndCaptureOutput(command, &exitCode);
+    if (static_cast<int32_t>(exitCode) != 0)
+        throw std::runtime_error(fmt::format("inject-helper failed (exit code {})", static_cast<int32_t>(exitCode)));
 
     PRINTLN("Injected successfully");
 }
