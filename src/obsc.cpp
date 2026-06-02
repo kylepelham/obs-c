@@ -48,7 +48,7 @@ void Capture::attach()
     initKeepalive();
     initPipe();
 
-    // Initialize the hook
+    // Reuse a resident hook (ping Restart); inject only if none exists
     if (!attemptExistingHook()) {
         PRINTLN("Inject new hook. Thread ID: {}", threadId);
         injectGraphicsHook(context.threadId, true, context.is32Bit);
@@ -61,11 +61,9 @@ void Capture::attach()
     initHookInfo();
     initEvents();
 
-    // Create and signal the hook init event
-    if (!context.hookInit->signal()) throw std::runtime_error(fmt::format("Failed to signal the hook init event ({})", GetLastError()));
-
-    // Wait for the hook to signal the ready event
-    if (!context.hookReady->signalled()) context.hookReady->wait();
+    // Drive the init/ready handshake
+    if (!waitHookReady())
+        throw std::runtime_error("Timed out waiting for the graphics hook to become ready");
 
     // // Extract data from the shared memory
     auto hookInfo = FileMapping<HookInfo>::open(fmt::format("{}{}", SHMEM_HOOK_INFO, context.pid));
@@ -88,11 +86,10 @@ void Capture::attach()
 
 void Capture::shutdown()
 {
-    // Signal the stop event & wait for the hook to exit
+    // Signal Stop (hook idles) and drop handles; releasing keepalive tells the
+    // hook we're gone. The hook never signals Exit, so don't wait on it.
     if (context.hookStop && !context.hookStop->signal()) PRINTLN("Failed to signal the stop event: {}", GetLastError());
-    if (context.hookExit) context.hookExit->wait();
 
-    // Cleanup
     context.hookRestart.reset();
     context.hookStop.reset();
     context.hookInit.reset();
@@ -116,9 +113,10 @@ void Capture::shutdown()
 
 std::tuple<std::vector<uint8_t>, std::pair<size_t, size_t>> Capture::captureFrame()
 {
-    // Restart the capture if the event is signalled
+    // Hook re-initialized capture (stale handle) -- re-attach cleanly
     if (context.hookRestart->signalled()) {
         PRINTLN("The restart event has been signalled. Restarting the capture.");
+        shutdown();
         attach();
     }
 
@@ -142,6 +140,7 @@ bool Capture::captureStripInto(uint8_t* out, int x, int y, int w, int h)
 
     if (context.hookRestart && context.hookRestart->signalled()) {
         PRINTLN("The restart event has been signalled. Restarting the capture.");
+        shutdown();
         attach();
     }
 

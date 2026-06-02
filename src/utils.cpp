@@ -20,7 +20,7 @@ std::string OBSC_EXPORT resolveBesideExe(const std::string& name)
     return (std::filesystem::path(moduleDir()) / name).string();
 }
 
-std::string OBSC_EXPORT runProcessAndCaptureOutput(const std::string& command)
+std::string OBSC_EXPORT runProcessAndCaptureOutput(const std::string& command, DWORD* exitCode)
 {
     // Create a pipe for the child process's STDOUT.
     HANDLE hStdOutRead, hStdOutWrite;
