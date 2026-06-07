@@ -9,6 +9,40 @@
 
 namespace obsc {
 
+namespace {
+
+void unmapSurface(Context& context)
+{
+    if (!context.surface) return;
+    context.surface->Unmap();
+    context.surface.Reset();
+}
+
+D3D11_TEXTURE2D_DESC stagingDescFor(const D3D11_TEXTURE2D_DESC& source, UINT width, UINT height)
+{
+    D3D11_TEXTURE2D_DESC desc = source;
+    desc.Width = width;
+    desc.Height = height;
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+    return desc;
+}
+
+bool sameStagingDesc(const D3D11_TEXTURE2D_DESC& a, const D3D11_TEXTURE2D_DESC& b)
+{
+    return a.Width == b.Width &&
+           a.Height == b.Height &&
+           a.MipLevels == b.MipLevels &&
+           a.ArraySize == b.ArraySize &&
+           a.Format == b.Format &&
+           a.SampleDesc.Count == b.SampleDesc.Count &&
+           a.SampleDesc.Quality == b.SampleDesc.Quality;
+}
+
+}
+
 Capture::Capture(const std::string& windowName, bool captureOverlays)
 {
     config.windowName = windowName;
@@ -75,10 +109,15 @@ void Capture::attach()
         // Initialize d3d11 variables
         auto [device, deviceContext] = createDevice();
         auto resource = openResource(device, context.textureHandle);
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> sourceTexture;
+        HRESULT hr = resource.As(&sourceTexture);
+        if (FAILED(hr))
+            throw std::runtime_error(fmt::format("Failed to query source texture 0x{:x}", hr));
 
         context.device = device;
         context.deviceContext = deviceContext;
         context.resource = resource;
+        context.sourceTexture = sourceTexture;
     }
 
     PRINTLN("Hook ready. Texture handle: {}. Capture Mode: {}", context.textureHandle, hookInfo->type == CaptureType::Memory ? "Memory" : "Texture");
@@ -102,11 +141,18 @@ void Capture::shutdown()
     context.textureMutex1.reset();
     context.textureMutex2.reset();
 
+    unmapSurface(context);
+
     context.device.Reset();
     context.deviceContext.Reset();
     context.resource.Reset();
-
-    context.surface.Reset();
+    context.sourceTexture.Reset();
+    context.readbackSurface.Reset();
+    context.readbackTexture.Reset();
+    context.readbackTextureDesc = {};
+    context.stripSurface.Reset();
+    context.stripTexture.Reset();
+    context.stripTextureDesc = {};
 
     PRINTLN("Capture shutdown complete.");
 }
@@ -130,6 +176,7 @@ std::tuple<std::vector<uint8_t>, std::pair<size_t, size_t>> Capture::captureFram
 
     std::vector<uint8_t> frameData(byteSize);
     std::memcpy(frameData.data(), mappedSurface.pBits, byteSize);
+    unmapSurface(context);
 
     return {std::move(frameData), dimensions};
 }
@@ -144,26 +191,57 @@ bool Capture::captureStripInto(uint8_t* out, int x, int y, int w, int h)
         attach();
     }
 
-    DXGI_MAPPED_RECT mapped{};
-    std::pair<size_t, size_t> dim{};
     try {
-        auto r = mapResource();
-        mapped = std::get<0>(r);
-        dim    = std::get<1>(r);
+        unmapSurface(context);
+        if (!context.sourceTexture) return false;
+
+        D3D11_TEXTURE2D_DESC textureDesc{};
+        context.sourceTexture->GetDesc(&textureDesc);
+
+        const UINT left   = static_cast<UINT>(x);
+        const UINT top    = static_cast<UINT>(y);
+        const UINT width  = static_cast<UINT>(w);
+        const UINT height = static_cast<UINT>(h);
+        if (left > textureDesc.Width || top > textureDesc.Height ||
+            width > textureDesc.Width - left ||
+            height > textureDesc.Height - top) return false;
+
+        D3D11_TEXTURE2D_DESC stripDesc = stagingDescFor(textureDesc, width, height);
+
+        if (!context.stripTexture || !sameStagingDesc(context.stripTextureDesc, stripDesc)) {
+            context.stripSurface.Reset();
+            context.stripTexture.Reset();
+            HRESULT hr = context.device->CreateTexture2D(&stripDesc, nullptr, &context.stripTexture);
+            if (FAILED(hr))
+                throw std::runtime_error(fmt::format("Failed to create strip texture 0x{:x}", hr));
+            hr = context.stripTexture.As(&context.stripSurface);
+            if (FAILED(hr))
+                throw std::runtime_error(fmt::format("Failed to query strip surface 0x{:x}", hr));
+            context.stripTexture->SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM);
+            context.stripTextureDesc = stripDesc;
+        }
+
+        const D3D11_BOX box{ left, top, 0, left + width, top + height, 1 };
+        context.deviceContext->CopySubresourceRegion(context.stripTexture.Get(), 0, 0, 0, 0,
+                                                     context.sourceTexture.Get(), 0, &box);
+
+        DXGI_MAPPED_RECT mapped{};
+        HRESULT hr = context.stripSurface->Map(&mapped, DXGI_MAP_READ);
+        if (FAILED(hr))
+            throw std::runtime_error(fmt::format("Failed to map strip surface 0x{:x}", hr));
+
+        const auto* src      = static_cast<const uint8_t*>(mapped.pBits);
+        const size_t pitch   = static_cast<size_t>(mapped.Pitch);
+        const size_t rowSize = static_cast<size_t>(w) * 4;
+
+        for (int row = 0; row < h; ++row)
+            std::memcpy(out + row * rowSize, src + row * pitch, rowSize);
+
+        context.stripSurface->Unmap();
     } catch (const std::exception& e) {
         PRINTLN("captureStripInto: {}", e.what());
         return false;
     }
-
-    if (static_cast<size_t>(x + w) > dim.first ||
-        static_cast<size_t>(y + h) > dim.second) return false;
-
-    const auto* src      = static_cast<const uint8_t*>(mapped.pBits);
-    const size_t pitch   = static_cast<size_t>(mapped.Pitch);
-    const size_t rowSize = static_cast<size_t>(w) * 4;
-
-    for (int row = 0; row < h; ++row)
-        std::memcpy(out + row * rowSize, src + (y + row) * pitch + x * 4, rowSize);
 
     return true;
 }
@@ -272,43 +350,36 @@ void Capture::initHookInfo()
 
 std::tuple<DXGI_MAPPED_RECT, std::pair<size_t, size_t>> Capture::mapResource()
 {
-    // Unmap the surface if it exists
-    if (context.surface) {
-        context.surface->Unmap();
-        context.surface.Reset();
+    unmapSurface(context);
+    if (!context.sourceTexture)
+        throw std::runtime_error("No source texture available");
+
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    context.sourceTexture->GetDesc(&textureDesc);
+
+    D3D11_TEXTURE2D_DESC readbackDesc = stagingDescFor(textureDesc, textureDesc.Width, textureDesc.Height);
+
+    if (!context.readbackTexture || !sameStagingDesc(context.readbackTextureDesc, readbackDesc)) {
+        context.readbackSurface.Reset();
+        context.readbackTexture.Reset();
+        HRESULT hr = context.device->CreateTexture2D(&readbackDesc, nullptr, &context.readbackTexture);
+        if (FAILED(hr))
+            throw std::runtime_error(fmt::format("Failed to create the 2d texture 0x{:x}", hr));
+        hr = context.readbackTexture.As(&context.readbackSurface);
+        if (FAILED(hr))
+            throw std::runtime_error(fmt::format("Failed to query readback surface 0x{:x}", hr));
+        context.readbackTexture->SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM);
+        context.readbackTextureDesc = readbackDesc;
     }
 
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> frameTexture;
-    context.resource.As(&frameTexture);
-
-    D3D11_TEXTURE2D_DESC textureDesc;
-    frameTexture->GetDesc(&textureDesc);
-
-    textureDesc.Usage = D3D11_USAGE_STAGING;
-    textureDesc.BindFlags = 0;
-    textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    textureDesc.MiscFlags = 0;
-
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> readableTexture;
-    HRESULT hr = context.device->CreateTexture2D(&textureDesc, nullptr, &readableTexture);
-    if (FAILED(hr))
-        throw std::runtime_error(fmt::format("Failed to create the 2d texture 0x{:x}", hr));
-
-    readableTexture->SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM);
-    Microsoft::WRL::ComPtr<ID3D11Resource> readableSurface;
-    readableTexture.As(&readableSurface);
-
-    context.deviceContext->CopyResource(readableSurface.Get(), frameTexture.Get());
-
-    Microsoft::WRL::ComPtr<IDXGISurface1> frameSurface;
-    readableSurface.As(&frameSurface);
+    context.deviceContext->CopyResource(context.readbackTexture.Get(), context.sourceTexture.Get());
 
     DXGI_MAPPED_RECT mapped_surface;
-    hr = frameSurface->Map(&mapped_surface, DXGI_MAP_READ);
+    HRESULT hr = context.readbackSurface->Map(&mapped_surface, DXGI_MAP_READ);
     if (FAILED(hr))
         throw std::runtime_error(fmt::format("Failed to map the surface 0x{:x}", hr));
 
-    context.surface = frameSurface;
+    context.surface = context.readbackSurface;
 
     return {mapped_surface, {textureDesc.Width, textureDesc.Height}};
 }

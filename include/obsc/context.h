@@ -47,6 +47,13 @@ struct OBSC_EXPORT Context {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> deviceContext;
     ComPtr<ID3D11Resource> resource;
+    ComPtr<ID3D11Texture2D> sourceTexture;
+    ComPtr<ID3D11Texture2D> readbackTexture;
+    ComPtr<IDXGISurface1> readbackSurface;
+    D3D11_TEXTURE2D_DESC readbackTextureDesc{};
+    ComPtr<ID3D11Texture2D> stripTexture;
+    ComPtr<IDXGISurface1> stripSurface;
+    D3D11_TEXTURE2D_DESC stripTextureDesc{};
 
     ComPtr<IDXGISurface> surface;
 };
