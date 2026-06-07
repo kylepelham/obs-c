@@ -41,6 +41,47 @@ bool sameStagingDesc(const D3D11_TEXTURE2D_DESC& a, const D3D11_TEXTURE2D_DESC& 
            a.SampleDesc.Quality == b.SampleDesc.Quality;
 }
 
+template <typename T>
+bool openMappedView(const std::string& name, HANDLE& handle, T*& view)
+{
+    HANDLE h = OpenFileMappingA(FILE_MAP_READ, FALSE, name.c_str());
+    if (!h) return false;
+
+    T* v = static_cast<T*>(MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(T)));
+    if (!v) {
+        CloseHandle(h);
+        return false;
+    }
+
+    handle = h;
+    view = v;
+    return true;
+}
+
+template <typename T>
+void closeMappedView(HANDLE& handle, T*& view)
+{
+    if (view) {
+        UnmapViewOfFile(view);
+        view = nullptr;
+    }
+    if (handle) {
+        CloseHandle(handle);
+        handle = nullptr;
+    }
+}
+
+void resetStagingCaches(Context& context)
+{
+    unmapSurface(context);
+    context.readbackSurface.Reset();
+    context.readbackTexture.Reset();
+    context.readbackTextureDesc = {};
+    context.stripSurface.Reset();
+    context.stripTexture.Reset();
+    context.stripTextureDesc = {};
+}
+
 }
 
 Capture::Capture(const std::string& windowName, bool captureOverlays)
@@ -99,28 +140,21 @@ void Capture::attach()
     if (!waitHookReady())
         throw std::runtime_error("Timed out waiting for the graphics hook to become ready");
 
-    // // Extract data from the shared memory
-    auto hookInfo = FileMapping<HookInfo>::open(fmt::format("{}{}", SHMEM_HOOK_INFO, context.pid));
+    if (!openMappedView(fmt::format("{}{}", SHMEM_HOOK_INFO, context.pid),
+                        context.hookInfoHandle, context.hookInfoView))
+        throw std::runtime_error("Failed to open hook info mapping");
 
-    auto textureData = FileMapping<ShtexData>::open(fmt::format("{}_{}_{}", SHMEM_TEXTURE, hookInfo->window, hookInfo->map_id));
-    context.textureHandle = textureData->tex_handle;
-
-    if (hookInfo->type == CaptureType::Texture) {
+    if (context.hookInfoView->type == CaptureType::Texture) {
         // Initialize d3d11 variables
         auto [device, deviceContext] = createDevice();
-        auto resource = openResource(device, context.textureHandle);
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> sourceTexture;
-        HRESULT hr = resource.As(&sourceTexture);
-        if (FAILED(hr))
-            throw std::runtime_error(fmt::format("Failed to query source texture 0x{:x}", hr));
-
         context.device = device;
         context.deviceContext = deviceContext;
-        context.resource = resource;
-        context.sourceTexture = sourceTexture;
+
+        if (!refreshSharedTexture())
+            throw std::runtime_error("Failed to open shared capture texture");
     }
 
-    PRINTLN("Hook ready. Texture handle: {}. Capture Mode: {}", context.textureHandle, hookInfo->type == CaptureType::Memory ? "Memory" : "Texture");
+    PRINTLN("Hook ready. Texture handle: {}. Capture Mode: {}", context.textureHandle, context.hookInfoView->type == CaptureType::Memory ? "Memory" : "Texture");
 }
 
 void Capture::shutdown()
@@ -141,18 +175,18 @@ void Capture::shutdown()
     context.textureMutex1.reset();
     context.textureMutex2.reset();
 
-    unmapSurface(context);
+    closeMappedView(context.textureDataHandle, context.textureDataView);
+    closeMappedView(context.hookInfoHandle, context.hookInfoView);
+    context.hookWindow = 0;
+    context.textureMapId = 0;
+
+    resetStagingCaches(context);
 
     context.device.Reset();
     context.deviceContext.Reset();
     context.resource.Reset();
     context.sourceTexture.Reset();
-    context.readbackSurface.Reset();
-    context.readbackTexture.Reset();
-    context.readbackTextureDesc = {};
-    context.stripSurface.Reset();
-    context.stripTexture.Reset();
-    context.stripTextureDesc = {};
+    context.textureHandle = 0;
 
     PRINTLN("Capture shutdown complete.");
 }
@@ -165,6 +199,9 @@ std::tuple<std::vector<uint8_t>, std::pair<size_t, size_t>> Capture::captureFram
         shutdown();
         attach();
     }
+
+    if (!refreshSharedTexture())
+        throw std::runtime_error("Failed to refresh shared capture texture");
 
     // Get the frame data
     auto [mappedSurface, dimensions] = mapResource();
@@ -190,6 +227,8 @@ bool Capture::captureStripInto(uint8_t* out, int x, int y, int w, int h)
         shutdown();
         attach();
     }
+
+    if (!refreshSharedTexture()) return false;
 
     try {
         unmapSurface(context);
@@ -441,6 +480,47 @@ bool Capture::attemptExistingHook()
         PRINTLN("Found no existing hook.");
         return false;
     }
+}
+
+bool Capture::refreshSharedTexture()
+{
+    if (!context.hookInfoView || !context.device)
+        return context.sourceTexture != nullptr;
+    if (context.hookInfoView->type != CaptureType::Texture)
+        return false;
+
+    const uint32_t window = context.hookInfoView->window;
+    const uint32_t mapId = context.hookInfoView->map_id;
+    if (!context.textureDataView || window != context.hookWindow || mapId != context.textureMapId) {
+        HANDLE newHandle = nullptr;
+        ShtexData* newView = nullptr;
+        if (!openMappedView(fmt::format("{}_{}_{}", SHMEM_TEXTURE, window, mapId), newHandle, newView))
+            return false;
+
+        closeMappedView(context.textureDataHandle, context.textureDataView);
+        context.textureDataHandle = newHandle;
+        context.textureDataView = newView;
+        context.hookWindow = window;
+        context.textureMapId = mapId;
+    }
+
+    const uint32_t textureHandle = context.textureDataView ? context.textureDataView->tex_handle : 0;
+    if (!textureHandle) return false;
+    if (textureHandle == context.textureHandle && context.sourceTexture)
+        return true;
+
+    auto resource = openResource(context.device, textureHandle);
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> sourceTexture;
+    HRESULT hr = resource.As(&sourceTexture);
+    if (FAILED(hr))
+        throw std::runtime_error(fmt::format("Failed to query source texture 0x{:x}", hr));
+
+    resetStagingCaches(context);
+    context.resource = resource;
+    context.sourceTexture = sourceTexture;
+    context.textureHandle = textureHandle;
+    PRINTLN("Shared texture refreshed. Texture handle: {}", textureHandle);
+    return true;
 }
 
 } // namespace obsc

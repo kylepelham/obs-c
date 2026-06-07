@@ -26,12 +26,22 @@ using Microsoft::WRL::ComPtr;
 
 namespace obsc {
 
+struct HookInfo;
+struct ShtexData;
+
 struct OBSC_EXPORT Context {
     HWND hwnd = nullptr;
     uint32_t pid = 0;
     DWORD threadId = 0;
     uint32_t textureHandle = 0;
+    uint32_t hookWindow = 0;
+    uint32_t textureMapId = 0;
     bool is32Bit = false;
+
+    HANDLE hookInfoHandle = nullptr;
+    HookInfo* hookInfoView = nullptr;
+    HANDLE textureDataHandle = nullptr;
+    ShtexData* textureDataView = nullptr;
     
     std::unique_ptr<Mutex> keepaliveMutex;
     std::unique_ptr<Mutex> textureMutex1;

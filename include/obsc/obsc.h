@@ -66,6 +66,7 @@ private:
     void initHookInfo();
     std::tuple<DXGI_MAPPED_RECT, std::pair<size_t, size_t>> mapResource();
     bool attemptExistingHook();
+    bool refreshSharedTexture();
     bool waitHookReady();
 };
 
